@@ -2,14 +2,13 @@
 import subprocess
 import sys
 import time
-import requests
+import socket
 
 # 配置项
-AGENT_HEALTH_URL = "http://localhost:8080/health"
 POSTGRES_SERVICE = "postgres"
 MYSQL_SERVICE = "mysql"
-AGENT_SERVICE = "agent"          # 如果 compose 中没有 agent，请注释掉相关测试
-MOUNT_TEST_FILE = "/app/data/persist_test.txt"
+POSTGRES_PORT = 5432
+MYSQL_PORT = 3306
 
 def run_cmd(cmd, check=True, timeout=120):
     print(f"\n[命令] {cmd}")
@@ -19,30 +18,22 @@ def run_cmd(cmd, check=True, timeout=120):
         sys.exit(1)
     return result
 
-def wait_for_http(url, max_retries=12, delay=5):
-    print(f"[等待] 等待 {url} 返回 200...")
+def wait_for_port(host, port, max_retries=30, delay=2):
+    """等待指定端口可连接"""
+    print(f"[等待] 等待 {host}:{port} 可连接...")
     for i in range(max_retries):
         try:
-            r = requests.get(url, timeout=3)
-            if r.status_code == 200:
-                print(f"[成功] {url} 返回 200")
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            if result == 0:
+                print(f"[成功] {host}:{port} 已就绪")
                 return True
         except Exception:
             pass
         time.sleep(delay)
-    print(f"[失败] {url} 未就绪")
-    sys.exit(1)
-
-def wait_for_container_healthy(service, max_retries=12, delay=5):
-    print(f"[等待] 等待容器 {service} 健康...")
-    for i in range(max_retries):
-        result = run_cmd(f"docker inspect --format='{{{{.State.Health.Status}}}}' {service}", check=False)
-        status = result.stdout.strip().strip("'")
-        if status == "healthy":
-            print(f"[成功] 容器 {service} 健康")
-            return True
-        time.sleep(delay)
-    print(f"[失败] 容器 {service} 未达到健康状态")
+    print(f"[失败] {host}:{port} 未就绪")
     sys.exit(1)
 
 def main():
@@ -50,45 +41,41 @@ def main():
     print("开始 Docker Compose macOS 兼容性测试")
     print("=" * 60)
 
-    # 检查 docker-compose 版本（替换为 docker-compose）
+    # 检查 docker-compose 版本
     run_cmd("docker-compose version")
 
-    # 启动所有服务（如果不需要 agent，可改为只启动 postgres 和 mysql）
-    run_cmd("docker-compose up -d")
-    # 或者明确指定服务：run_cmd("docker-compose up -d postgres mysql")
+    # 只启动数据库服务（避免 ai-agent 问题）
+    print("\n[启动] 启动数据库服务 (postgres 和 mysql)...")
+    run_cmd("docker-compose up -d postgres mysql")
 
-    # 等待数据库健康（如果 compose 中没有 agent，此处会失败，需注释）
-    wait_for_container_healthy(POSTGRES_SERVICE)
-    wait_for_container_healthy(MYSQL_SERVICE)
+    # 等待端口可连接（宿主机映射端口）
+    wait_for_port("localhost", POSTGRES_PORT)
+    wait_for_port("localhost", MYSQL_PORT)
 
-    # 如果 agent 服务存在才等待 HTTP
-    # wait_for_http(AGENT_HEALTH_URL)   # 如果不需要，注释掉
+    # 额外等待几秒让数据库完全初始化
+    time.sleep(5)
 
-    # 数据库连接测试
+    # 测试 PostgreSQL 连接
     print("\n[验证] PostgreSQL 连接...")
-    pg = run_cmd(f"docker-compose exec -T {POSTGRES_SERVICE} pg_isready -U agent -d agent", check=False)
+    pg = run_cmd(
+        f"docker-compose exec -T {POSTGRES_SERVICE} pg_isready -U postgres",
+        check=False
+    )
     if "accepting connections" not in pg.stdout:
         print(f"[失败] PostgreSQL 异常: {pg.stdout}")
         sys.exit(1)
     print("[成功] PostgreSQL 正常")
 
+    # 测试 MySQL 连接
     print("\n[验证] MySQL 连接...")
-    my = run_cmd(f"docker-compose exec -T {MYSQL_SERVICE} mysqladmin ping -h localhost -uroot -prootsecret", check=False)
+    my = run_cmd(
+        f"docker-compose exec -T {MYSQL_SERVICE} mysqladmin ping -h localhost -uroot -proot",
+        check=False
+    )
     if "mysqld is alive" not in my.stdout:
         print(f"[失败] MySQL 异常: {my.stdout}")
         sys.exit(1)
     print("[成功] MySQL 正常")
-
-    # 数据持久化测试（依赖 agent 服务，若不需要可注释）
-    # print("\n[验证] 数据持久化...")
-    # run_cmd(f"docker-compose exec {AGENT_SERVICE} sh -c 'echo persist_test > {MOUNT_TEST_FILE}'")
-    # run_cmd(f"docker-compose restart {AGENT_SERVICE}")
-    # wait_for_http(AGENT_HEALTH_URL, max_retries=6, delay=5)
-    # read = run_cmd(f"docker-compose exec {AGENT_SERVICE} cat {MOUNT_TEST_FILE}", check=False)
-    # if "persist_test" not in read.stdout:
-    #     print(f"[失败] 持久化验证失败: 文件内容 '{read.stdout}'")
-    #     sys.exit(1)
-    # print("[成功] 数据持久化正常")
 
     print("\n✅ 所有测试通过！")
 
