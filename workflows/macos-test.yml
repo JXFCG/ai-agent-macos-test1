@@ -1,0 +1,64 @@
+name: macOS Docker Compose Test
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装 Python 依赖
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install requests
+
+      - name: 安装 Docker 环境 (Colima)
+        run: |
+          set -x
+          brew install colima docker qemu docker-compose
+          colima delete -f || true
+          colima start --cpu 2 --memory 4 --disk 20 --vm-type=qemu
+          colima status
+          echo "Waiting for Docker to be ready..."
+          for i in {1..120}; do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker is ready"
+              break
+            fi
+            echo "Attempt $i/120: Docker not ready, waiting 5s..."
+            sleep 5
+            if [ $i -eq 120 ]; then
+              echo "Docker did not become ready in time."
+              colima logs || true
+              exit 1
+            fi
+          done
+          docker version
+          docker-compose version
+        shell: /bin/bash -e {0}
+
+      # ===== 关键修改：只启动数据库服务 =====
+      - name: 启动 Docker Compose 服务（仅 postgres 和 mysql）
+        run: docker-compose up -d postgres mysql
+
+      - name: 运行测试脚本
+        run: python3 scripts/test_compose.py
+
+      - name: 清理资源
+        if: always()
+        run: |
+          if docker info >/dev/null 2>&1; then
+            docker-compose down -v
+          else
+            echo "Docker not available, skip cleanup."
+          fi
