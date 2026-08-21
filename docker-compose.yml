@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  agent:
+    image: your-registry/ai-agent:latest   # 替换为你的镜像（或使用 build）
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-agent
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=postgres
+      - DB_USER=agent
+      - DB_PASSWORD=secret
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=agent
+      - MYSQL_PASSWORD=secret
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+      - mysql
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: agent-postgres
+    environment:
+      - POSTGRES_DB=agent
+      - POSTGRES_USER=agent
+      - POSTGRES_PASSWORD=secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mysql:
+    image: mysql:8.0
+    container_name: agent-mysql
+    environment:
+      - MYSQL_DATABASE=agent
+      - MYSQL_USER=agent
+      - MYSQL_PASSWORD=secret
+      - MYSQL_ROOT_PASSWORD=rootsecret
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-prootsecret"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  mysql_data:
