@@ -1,115 +1,122 @@
-name: Docker Compose macOS Compatibility Test
-
+name: macOS Docker Compose Test
 
 on:
-
   push:
-
+    branches:
+      - main
   pull_request:
-
-
+  workflow_dispatch:
 
 jobs:
-
-
-  docker-test:
-
-
-    runs-on:
-
-      macos-latest
-
-
+  test-macos:
+    runs-on: macos-latest
 
     steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
 
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Checkout
+      - name: 检查 Python
+        run: |
+          python3 --version
+          which python3
 
-      uses: actions/checkout@v4
+      - name: 安装 Docker 环境
+        run: |
+          set -euxo pipefail
 
+          brew update
 
+          brew install colima docker docker-compose qemu
 
+          echo "===== Docker CLI ====="
+          docker --version
 
+          echo "===== Docker Compose ====="
+          docker-compose --version
 
-    - name: Check Environment
+          echo "===== Colima ====="
+          colima version
 
+      - name: 启动 Colima
+        run: |
+          set -euxo pipefail
 
-      run:
+          colima delete -f || true
 
-        |
+          colima start \
+            --cpu 2 \
+            --memory 4 \
+            --disk 20 \
+            --vm-type=qemu
 
-        docker --version
+          colima status
 
-        docker compose version
+      - name: 等待 Docker 就绪
+        run: |
+          set -euxo pipefail
 
+          for i in {1..60}; do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker 已就绪"
+              break
+            fi
 
+            echo "等待 Docker 启动: $i/60"
+            sleep 5
 
+            if [ "$i" -eq 60 ]; then
+              echo "Docker 启动失败"
+              colima status || true
+              colima logs || true
+              exit 1
+            fi
+          done
 
+          docker version
+          docker info
+          docker-compose --version
 
-    - name: Start Docker Compose Test
+      - name: 检查测试文件
+        run: |
+          echo "===== 当前分支 ====="
+          git branch --show-current
 
+          echo "===== 当前提交 ====="
+          git rev-parse HEAD
 
-      run:
+          echo "===== test_compose.py ====="
+          sed -n '1,220p' scripts/test_compose.py
 
-        |
+          echo "===== docker-compose.yml ====="
+          sed -n '1,220p' docker-compose.yml
 
-        docker compose up -d postgres mysql
+      - name: 清理旧容器和数据
+        run: |
+          docker-compose down -v --remove-orphans || true
 
+      - name: 运行 Docker Compose 测试
+        run: |
+          python3 scripts/test_compose.py
 
+      - name: 测试失败时显示 Compose 日志
+        if: failure()
+        run: |
+          echo "===== Docker Compose 状态 ====="
+          docker-compose ps || true
 
+          echo "===== Docker Compose 日志 ====="
+          docker-compose logs --no-color || true
 
+          echo "===== Colima 状态 ====="
+          colima status || true
 
-    - name: Wait Containers
-
-
-      run:
-
-        |
-
-        docker compose ps
-
-
-
-
-
-    - name: Run Compatibility Test
-
-
-      run:
-
-        |
-
-        python3 scripts/test_compose.py
-
-
-
-
-
-    - name: Show Logs When Failed
-
-
-      if: failure()
-
-
-      run:
-
-        |
-
-        docker compose logs
-
-
-
-
-
-    - name: Cleanup
-
-
-      if: always()
-
-
-      run:
-
-        |
-
-        docker compose down -v
+      - name: 清理资源
+        if: always()
+        run: |
+          docker-compose down -v --remove-orphans || true
+          colima stop || true
